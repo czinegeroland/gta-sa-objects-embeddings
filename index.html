@@ -5,25 +5,47 @@
 <title>GTA:SA Embedding Projector</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:#ffffff; overflow:hidden; }
+body { background:#ffffff; overflow:hidden; font-family:'Courier New',monospace; }
 #canvas { display:block; }
-#stats { position:fixed; bottom:12px; left:12px; font-size:11px; color:#bbb; font-family:'Courier New',monospace; }
-#controls { position:fixed; bottom:12px; right:12px; font-size:11px; color:#ccc; font-family:'Courier New',monospace; }
+#searchbox {
+  position:fixed; top:16px; left:50%; transform:translateX(-50%);
+  z-index:10; display:flex; align-items:center; gap:8px;
+  background:rgba(255,255,255,0.95); border:1px solid #ddd;
+  border-radius:8px; padding:7px 14px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+}
+#search {
+  border:none; outline:none; font-family:'Courier New',monospace;
+  font-size:13px; color:#333; background:transparent; width:220px;
+}
+#search::placeholder { color:#bbb; }
+#match-count { font-size:11px; color:#bbb; white-space:nowrap; }
+#clear-btn {
+  font-size:14px; color:#bbb; cursor:pointer; line-height:1;
+  background:none; border:none; padding:0;
+}
+#clear-btn:hover { color:#666; }
+#stats { position:fixed; bottom:12px; left:12px; font-size:11px; color:#bbb; }
+#controls { position:fixed; bottom:12px; right:12px; font-size:11px; color:#ccc; }
 #tooltip {
   position:fixed; pointer-events:none; display:none;
   background:rgba(255,255,255,0.95); border:1px solid #ddd;
   border-radius:6px; padding:6px 10px; font-size:12px;
-  font-family:'Courier New',monospace; color:#333;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  color:#333; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
 #loading {
   position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-  font-size:14px; color:#999; font-family:'Courier New',monospace;
+  font-size:14px; color:#999;
 }
 </style>
 </head>
 <body>
 <div id="loading">Loading embeddings...</div>
+<div id="searchbox">
+  <input id="search" type="text" placeholder="Search objects..." autocomplete="off" />
+  <span id="match-count"></span>
+  <button id="clear-btn" title="Clear">✕</button>
+</div>
 <canvas id="canvas"></canvas>
 <div id="tooltip"></div>
 <div id="stats"></div>
@@ -60,6 +82,7 @@ fetch('embeddings_data.json')
     let rotX = 0.3, rotY = 0.5, zoom = 1.0;
     let dragging = false, lastX, lastY;
     let selectedIdx = null, highlightSet = new Set();
+    let searchHighlight = new Set();
 
     function project(x, y, z) {
       let x1 = x * Math.cos(rotY) + z * Math.sin(rotY);
@@ -76,6 +99,7 @@ fetch('embeddings_data.json')
 
     function render() {
       ctx.clearRect(0, 0, W, H);
+
       [[ 1,0,0,'#ffb3b3'],[0,1,0,'#b3e0d8'],[0,0,1,'#b3ccdd']].forEach(([ax,ay,az,col]) => {
         const o = project(0,0,0), e = project(ax*0.8,ay*0.8,az*0.8);
         ctx.beginPath(); ctx.moveTo(o.sx,o.sy); ctx.lineTo(e.sx,e.sy);
@@ -86,27 +110,30 @@ fetch('embeddings_data.json')
       const pts = DATA.points.map((p,i) => ({i, proj: project(p[0],p[1],p[2])}));
       pts.sort((a,b) => b.proj.depth - a.proj.depth);
       let labelsToDraw = [];
+      const hasFilter = highlightSet.size > 0 || searchHighlight.size > 0;
 
       pts.forEach(({i, proj}) => {
         const isSelected = i === selectedIdx;
         const isNeighbour = highlightSet.has(i);
+        const isSearch = searchHighlight.has(i);
         const [r,g,b] = hexToRgb(catColor[DATA.categories[i]]);
         let alpha = 0.45, size = 2.5;
         if (isSelected) { alpha = 1; size = 7; }
         else if (isNeighbour) { alpha = 0.95; size = 4.5; }
-        else if (highlightSet.size > 0) { alpha = 0.07; size = 2; }
+        else if (isSearch) { alpha = 1; size = 5; }
+        else if (hasFilter) { alpha = 0.06; size = 2; }
         ctx.beginPath();
         ctx.arc(proj.sx, proj.sy, size, 0, Math.PI*2);
         ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
         ctx.fill();
-        if (isSelected || isNeighbour) {
-          labelsToDraw.push({sx:proj.sx, sy:proj.sy, name:DATA.names[i], isSelected});
+        if (isSelected || isNeighbour || isSearch) {
+          labelsToDraw.push({sx:proj.sx, sy:proj.sy, name:DATA.names[i], isSelected, isSearch});
         }
       });
 
-      labelsToDraw.forEach(({sx,sy,name,isSelected}) => {
+      labelsToDraw.forEach(({sx,sy,name,isSelected,isSearch}) => {
         ctx.font = isSelected ? 'bold 13px Courier New' : '11px Courier New';
-        ctx.fillStyle = isSelected ? '#111' : '#666';
+        ctx.fillStyle = isSelected ? '#111' : isSearch ? '#c9a227' : '#666';
         ctx.fillText(name, sx+6, sy-4);
       });
 
@@ -114,6 +141,35 @@ fetch('embeddings_data.json')
         `${DATA.points.length} objects · PCA (${(DATA.explained[0]*100).toFixed(1)}% + ${(DATA.explained[1]*100).toFixed(1)}% + ${(DATA.explained[2]*100).toFixed(1)}% variance)`;
     }
 
+    // Search
+    const searchInput = document.getElementById('search');
+    const matchCount = document.getElementById('match-count');
+    const clearBtn = document.getElementById('clear-btn');
+
+    searchInput.addEventListener('input', e => {
+      const q = e.target.value.trim().toLowerCase();
+      searchHighlight = new Set();
+      if (q.length > 1) {
+        DATA.names.forEach((n, i) => {
+          if (n.toLowerCase().includes(q)) searchHighlight.add(i);
+        });
+        matchCount.textContent = searchHighlight.size > 0 ? `${searchHighlight.size} found` : 'no results';
+      } else {
+        matchCount.textContent = '';
+      }
+      selectedIdx = null; highlightSet = new Set();
+      render();
+    });
+
+    clearBtn.addEventListener('click', () => {
+      searchInput.value = '';
+      searchHighlight = new Set();
+      matchCount.textContent = '';
+      selectedIdx = null; highlightSet = new Set();
+      render();
+    });
+
+    // Mouse
     canvas.addEventListener('mousedown', e => { dragging=true; lastX=e.clientX; lastY=e.clientY; });
     canvas.addEventListener('mousemove', e => {
       if (!dragging) return;
@@ -164,6 +220,9 @@ fetch('embeddings_data.json')
         selectedIdx=best;
         highlightSet=new Set(DATA.neighbours[best]);
         highlightSet.add(best);
+        searchHighlight=new Set();
+        searchInput.value='';
+        matchCount.textContent='';
       } else {
         selectedIdx=null; highlightSet=new Set();
       }
